@@ -1,3 +1,5 @@
+require('dotenv').config(); // Charge les variables d'environnement depuis .env
+
 const express = require('express');
 const path = require('path');
 const mysql = require('mysql2');
@@ -8,24 +10,26 @@ const flash = require('connect-flash');
 
 const app = express();
 
-// Config EJS
+// Configuration EJS
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
-// Middleware
+// Middleware pour fichiers statiques & corps de requêtes
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
+// Session express
 app.use(session({
-    secret: 'secret_key', // ⚠️ change cette clé en valeur sécurisée
+    secret: process.env.SESSION_SECRET || 'secret_key_change_me', // Change la clé secrète dans .env !
     resave: false,
     saveUninitialized: false
 }));
 
+// Flash messages (pour afficher erreurs/succès)
 app.use(flash());
 
-// Middleware global : rendre "user" + messages dispo dans toutes les vues
+// Middleware global : variables accessibles dans toutes les vues
 app.use((req, res, next) => {
     res.locals.user = req.session.user || null;
     res.locals.success_msg = req.flash('success_msg');
@@ -33,59 +37,48 @@ app.use((req, res, next) => {
     next();
 });
 
-// Connexion MySQL
+// Connexion MySQL sécurisée via variables d’environnement
 const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root', // ton utilisateur MySQL
-    password: '', // ton mot de passe MySQL
-    database: 'auth_db'
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASS || '',
+    database: process.env.DB_NAME || 'auth_db'
 });
 
 db.connect(err => {
-    if (err) throw err;
+    if (err) {
+        console.error('❌ Erreur de connexion à MySQL:', err);
+        process.exit(1); // Arrête le serveur si pas de connexion
+    }
     console.log('✅ Connecté à MySQL');
 });
 
-// ===================== ROUTES =====================
+// ========== ROUTES ==========
 
-// Page accueil
+// Accueil
 app.get('/', (req, res) => {
     res.render('index', { title: "Bienvenue" });
 });
 
-// Page inscription
+// Inscription
 app.get('/register', (req, res) => {
     res.render('register', { title: "Inscription" });
 });
 
-// Page connexion
-app.get('/login', (req, res) => {
-    res.render('login', { title: "Connexion" });
-});
-
-// Page profil protégée
-app.get('/profile', (req, res) => {
-    if (!req.session.user) {
-        req.flash('error_msg', 'Veuillez vous connecter pour accéder à votre profil.');
-        return res.redirect('/login');
-    }
-    res.render('profile', { title: "Profil" });
-});
-
-// Déconnexion
-app.get('/logout', (req, res) => {
-    req.session.destroy();
-    res.redirect('/');
-});
-
-// ===================== API POST =====================
-
-// Inscription
 app.post('/register', async (req, res) => {
     const { username, password } = req.body;
 
+    if (!username || !password) {
+        req.flash('error_msg', 'Veuillez fournir un nom d’utilisateur et un mot de passe.');
+        return res.redirect('/register');
+    }
+
     db.query('SELECT * FROM users WHERE username = ?', [username], async (err, results) => {
-        if (err) throw err;
+        if (err) {
+            req.flash('error_msg', 'Erreur serveur, réessayez plus tard.');
+            return res.redirect('/register');
+        }
+
         if (results.length > 0) {
             req.flash('error_msg', "Nom d'utilisateur déjà pris.");
             return res.redirect('/register');
@@ -95,7 +88,10 @@ app.post('/register', async (req, res) => {
 
         db.query('INSERT INTO users (username, password) VALUES (?, ?)', 
         [username, hashedPassword], (err) => {
-            if (err) throw err;
+            if (err) {
+                req.flash('error_msg', 'Erreur lors de l’inscription.');
+                return res.redirect('/register');
+            }
             req.flash('success_msg', "Inscription réussie, vous pouvez vous connecter.");
             res.redirect('/login');
         });
@@ -103,11 +99,23 @@ app.post('/register', async (req, res) => {
 });
 
 // Connexion
+app.get('/login', (req, res) => {
+    res.render('login', { title: "Connexion" });
+});
+
 app.post('/login', (req, res) => {
     const { username, password } = req.body;
 
+    if (!username || !password) {
+        req.flash('error_msg', 'Veuillez fournir un nom d’utilisateur et un mot de passe.');
+        return res.redirect('/login');
+    }
+
     db.query('SELECT * FROM users WHERE username = ?', [username], async (err, results) => {
-        if (err) throw err;
+        if (err) {
+            req.flash('error_msg', 'Erreur serveur, réessayez plus tard.');
+            return res.redirect('/login');
+        }
         if (results.length === 0) {
             req.flash('error_msg', "Utilisateur introuvable.");
             return res.redirect('/login');
@@ -119,12 +127,29 @@ app.post('/login', (req, res) => {
             return res.redirect('/login');
         }
 
-        req.session.user = results[0];
+        req.session.user = { id: results[0].id, username: results[0].username }; // Stocke seulement l'info utile
         res.redirect('/profile');
     });
 });
 
-// ===================== LANCEMENT =====================
-app.listen(3000, () => {
-    console.log("🚀 Serveur sur http://localhost:3000");
+// Profil protégé
+app.get('/profile', (req, res) => {
+    if (!req.session.user) {
+        req.flash('error_msg', 'Veuillez vous connecter pour accéder à votre profil.');
+        return res.redirect('/login');
+    }
+    res.render('profile', { title: "Profil", user: req.session.user });
+});
+
+// Déconnexion
+app.get('/logout', (req, res) => {
+    req.session.destroy(() => {
+        res.redirect('/');
+    });
+});
+
+// Lancement serveur
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Serveur lancé sur http://localhost:${PORT}`);
 });
