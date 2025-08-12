@@ -1,8 +1,9 @@
 {
   "name": "jeux",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "serveur.js",
   "scripts": {
+    "start": "node serveur.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
